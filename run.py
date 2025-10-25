@@ -18,6 +18,72 @@ from utils import get_web_element_rect, encode_image, extract_information, print
     get_webarena_accessibility_tree, get_pdf_retrieval_ans_from_assistant, clip_message_and_obs, clip_message_and_obs_text_only
 
 
+class SequrityAI:
+    """Wrapper for OpenAI client that manages Sequrity session IDs."""
+
+    def __init__(self, api_key, base_url):
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            default_headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            }
+        )
+        self._session_id = None
+        self.base_url = base_url
+
+    def reset_session(self):
+        """Reset session ID for a new task."""
+        if self._session_id:
+            logging.info(f"[Session] Resetting session ID (was: {self._session_id})")
+        self._session_id = None
+
+    @property
+    def chat(self):
+        """Return chat interface."""
+        return self._ChatInterface(self)
+
+    class _ChatInterface:
+        def __init__(self, parent):
+            self.parent = parent
+
+        @property
+        def completions(self):
+            return self.parent._CompletionsInterface(self.parent)
+
+    class _CompletionsInterface:
+        def __init__(self, parent):
+            self.parent = parent
+
+        def create(self, **kwargs):
+            """Create chat completion with session management."""
+            # Prepare extra headers
+            extra_headers = kwargs.get('extra_headers', {})
+
+            if self.parent._session_id is not None:
+                logging.info(f"[Session] Reusing session ID: {self.parent._session_id}")
+                extra_headers["X-Session-Id"] = self.parent._session_id
+            else:
+                logging.info("[Session] No session ID, starting fresh")
+
+            kwargs['extra_headers'] = extra_headers
+
+            # Make API call with raw response to get headers
+            response = self.parent.client.chat.completions.with_raw_response.create(**kwargs)
+
+            # Extract session ID from response headers
+            session_id = response.headers.get("x-session-id") or response.headers.get("X-Session-Id")
+            if session_id:
+                logging.info(f"[Session] Extracted session ID from response: {session_id}")
+                self.parent._session_id = session_id
+            else:
+                logging.warning("[Session] No session ID found in response headers")
+
+            # Return the parsed completion
+            return response.parse()
+
+
 def setup_logger(folder_path):
     log_file_path = os.path.join(folder_path, 'agent.log')
 
@@ -253,8 +319,33 @@ def main():
 
     args = parser.parse_args()
 
-    # OpenAI client
-    client = OpenAI(api_key=args.api_key)
+    # Get remote endpoint from environment variable
+    remote_endpoint = os.getenv("REMOTE_ENDPOINT")
+
+    # Determine if we should use Sequrity or OpenAI
+    use_sequrity = remote_endpoint and "sequrity" in remote_endpoint.lower()
+
+    # Load appropriate API key from environment
+    if use_sequrity:
+        # Use SEQURITY_API_KEY for Sequrity endpoint
+        api_key = os.getenv("SEQURITY_API_KEY") or args.api_key
+        if not api_key or api_key == "key":
+            raise ValueError("SEQURITY_API_KEY environment variable must be set or provide --api_key")
+        print(f"Using Sequrity endpoint: {remote_endpoint}")
+        client = SequrityAI(api_key=api_key, base_url=remote_endpoint)
+    else:
+        # Use OPENAI_API_KEY for OpenAI endpoint
+        api_key = os.getenv("OPENAI_API_KEY") or args.api_key
+        if not api_key or api_key == "key":
+            raise ValueError("OPENAI_API_KEY environment variable must be set or provide --api_key")
+
+        # Use standard OpenAI client
+        if remote_endpoint and "openai" in remote_endpoint.lower():
+            print(f"Using OpenAI endpoint: {remote_endpoint}")
+            client = OpenAI(api_key=api_key, base_url=remote_endpoint)
+        else:
+            print("Using default OpenAI endpoint")
+            client = OpenAI(api_key=api_key)
 
     options = driver_config(args)
 
@@ -276,6 +367,10 @@ def main():
         os.makedirs(task_dir, exist_ok=True)
         setup_logger(task_dir)
         logging.info(f'########## TASK{task["id"]} ##########')
+
+        # Reset session ID for Sequrity at the start of each task
+        if use_sequrity:
+            client.reset_session()
 
         driver_task = webdriver.Chrome(options=options)
 
