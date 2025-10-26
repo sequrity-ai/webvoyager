@@ -14,74 +14,9 @@ from selenium.webdriver.common.action_chains import ActionChains
 
 from prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_TEXT_ONLY
 from openai import OpenAI
+from sequrity_client import SequrityAI
 from utils import get_web_element_rect, encode_image, extract_information, print_message,\
     get_webarena_accessibility_tree, get_pdf_retrieval_ans_from_assistant, clip_message_and_obs, clip_message_and_obs_text_only
-
-
-class SequrityAI:
-    """Wrapper for OpenAI client that manages Sequrity session IDs."""
-
-    def __init__(self, api_key, base_url):
-        self.client = OpenAI(
-            api_key=api_key,
-            base_url=base_url,
-            default_headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            }
-        )
-        self._session_id = None
-        self.base_url = base_url
-
-    def reset_session(self):
-        """Reset session ID for a new task."""
-        if self._session_id:
-            logging.info(f"[Session] Resetting session ID (was: {self._session_id})")
-        self._session_id = None
-
-    @property
-    def chat(self):
-        """Return chat interface."""
-        return self._ChatInterface(self)
-
-    class _ChatInterface:
-        def __init__(self, parent):
-            self.parent = parent
-
-        @property
-        def completions(self):
-            return self.parent._CompletionsInterface(self.parent)
-
-    class _CompletionsInterface:
-        def __init__(self, parent):
-            self.parent = parent
-
-        def create(self, **kwargs):
-            """Create chat completion with session management."""
-            # Prepare extra headers
-            extra_headers = kwargs.get('extra_headers', {})
-
-            if self.parent._session_id is not None:
-                logging.info(f"[Session] Reusing session ID: {self.parent._session_id}")
-                extra_headers["X-Session-Id"] = self.parent._session_id
-            else:
-                logging.info("[Session] No session ID, starting fresh")
-
-            kwargs['extra_headers'] = extra_headers
-
-            # Make API call with raw response to get headers
-            response = self.parent.client.chat.completions.with_raw_response.create(**kwargs)
-
-            # Extract session ID from response headers
-            session_id = response.headers.get("x-session-id") or response.headers.get("X-Session-Id")
-            if session_id:
-                logging.info(f"[Session] Extracted session ID from response: {session_id}")
-                self.parent._session_id = session_id
-            else:
-                logging.warning("[Session] No session ID found in response headers")
-
-            # Return the parsed completion
-            return response.parse()
 
 
 def setup_logger(folder_path):
@@ -323,7 +258,7 @@ def main():
     remote_endpoint = os.getenv("REMOTE_ENDPOINT")
 
     # Determine if we should use Sequrity or OpenAI
-    use_sequrity = remote_endpoint and "sequrity" in remote_endpoint.lower()
+    use_sequrity = remote_endpoint and ("sequrity" in remote_endpoint.lower() or "127.0.0.1" in remote_endpoint.lower())
 
     # Load appropriate API key from environment
     if use_sequrity:
