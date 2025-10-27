@@ -14,11 +14,23 @@ class Usage:
         self.total_tokens = data.get("total_tokens", 0)
 
 
+class ToolCall:
+    """Tool call information."""
+    def __init__(self, data):
+        self.id = data.get("id", "")
+        self.type = data.get("type", "function")
+        self.function = type('Function', (), {
+            'name': data.get("function", {}).get("name", ""),
+            'arguments': data.get("function", {}).get("arguments", "{}")
+        })()
+
+
 class Message:
     """Chat message with content unwrapping for Sequrity format."""
     def __init__(self, data):
         self.role = data.get("role", "assistant")
         self.content = self._extract_content(data.get("content", ""))
+        self.tool_calls = [ToolCall(tc) for tc in data.get("tool_calls", [])] if data.get("tool_calls") else None
 
     def _extract_content(self, content):
         """Extract and format content from Sequrity JSON wrapper."""
@@ -124,7 +136,7 @@ class ChatCompletions:
         }
 
         # Add optional parameters
-        for param in ["max_tokens", "seed", "temperature", "timeout"]:
+        for param in ["max_tokens", "seed", "temperature", "timeout", "tools", "tool_choice", "reasoning_effort"]:
             if kwargs.get(param) is not None:
                 body[param] = kwargs[param]
 

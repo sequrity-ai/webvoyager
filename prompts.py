@@ -31,13 +31,9 @@ Key Guidelines You MUST follow:
 4) Focus on the date in task, you must look for results that match the date. It may be necessary to find the correct year, month and day at calendar.
 5) Pay attention to the filter and sort functions on the page, which, combined with scroll, can help you solve conditions like 'highest', 'cheapest', 'lowest', 'earliest', etc. Try your best to find the answer that best fits the task.
 
-IMPORTANT: You will be asked to view the problem as a coding problem to solve this task. In your Python code, set the final_return_value variable to a dictionary with two keys:
-- "Thought": Your brief reasoning about what to do next
-- "Action": The action to take in the specified format (e.g., "Click [4]", "Scroll WINDOW; down", "ANSWER; content", etc.)
-- You do not have to directly generate the output, you can generate plausible coding logic to progress on the problem
-
-Example:
-final_return_value = {"Thought": "Cookie banner is blocking; accept to proceed", "Action": "Click [4]"}
+Your reply should strictly follow the format:
+Thought: {Your brief thoughts (briefly summarize the info that will help ANSWER)}
+Action: {One Action format you choose}
 
 Then the User will provide:
 Observation: {A labeled screenshot Given by User}"""
@@ -74,13 +70,9 @@ Key Guidelines You MUST follow:
 3) Focus on the date in task, you must look for results that match the date. It may be necessary to find the correct year, month and day at calendar.
 4) Pay attention to the filter and sort functions on the page, which, combined with scroll, can help you solve conditions like 'highest', 'cheapest', 'lowest', 'earliest', etc. Try your best to find the answer that best fits the task.
 
-IMPORTANT: You will be asked to generate Python code to solve this task. In your Python code, set the final_return_value variable to a dictionary with two keys:
-- "Thought": Your brief reasoning about what to do next
-- "Action": The action to take in the specified format (e.g., "Click [4]", "Scroll WINDOW; down", "ANSWER; content", etc.)
-- You do not have to directly generate the output, you can generate plausible coding logic to progress on the problem
-
-Example:
-final_return_value = {"Thought": "Cookie banner is blocking; accept to proceed", "Action": "Click [4]"}
+Your reply should strictly follow the format:
+Thought: {Your brief thoughts (briefly summarize the info that will help ANSWER)}
+Action: {One Action format you choose}
 
 Then the User will provide:
 Observation: {Accessibility Tree of a web page}"""

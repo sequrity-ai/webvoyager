@@ -6,13 +6,13 @@ import re
 import os
 import shutil
 import logging
+import traceback
 
 from selenium import webdriver
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
 from selenium.webdriver.common.action_chains import ActionChains
 
-from prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_TEXT_ONLY
 from openai import OpenAI
 from sequrity_client import SequrityAI
 from utils import get_web_element_rect, encode_image, extract_information, print_message,\
@@ -56,9 +56,122 @@ def driver_config(args):
     return options
 
 
-def format_msg(it, init_msg, pdf_obs, warn_obs, web_img_b64, web_text):
+def detect_stuck_loop(messages, lookback=3, threshold=2):
+    """
+    Detect if the same action has been repeated multiple times without progress.
+
+    Args:
+        messages: List of chat messages with role and content
+        lookback: How many recent assistant messages to check (default: 3)
+        threshold: How many times the same action triggers a warning (default: 2)
+
+    Returns:
+        (bool, str): (stuck_loop_detected, repeated_action)
+    """
+    import re
+
+    # Extract recent assistant actions
+    recent_actions = []
+    assistant_msgs = [msg for msg in messages if msg.get('role') == 'assistant']
+
+    # Look at the last 'lookback' assistant messages
+    for msg in assistant_msgs[-lookback:]:
+        content = msg.get('content', '')
+        # Extract action using regex (same pattern as main loop)
+        if 'Action:' in content:
+            try:
+                # Pattern matches "Action: <action_text>"
+                action_match = re.search(r'Action:\s*(.+?)(?:\n|$)', content)
+                if action_match:
+                    action = action_match.group(1).strip()
+                    recent_actions.append(action)
+            except:
+                pass
+
+    # Check if same action is repeated
+    if len(recent_actions) >= threshold:
+        # Check if the last N actions are identical
+        last_action = recent_actions[-1]
+        repeated_count = sum(1 for a in recent_actions[-threshold:] if a == last_action)
+
+        if repeated_count >= threshold:
+            return True, last_action
+
+    return False, ""
+
+
+def generate_action_history(messages, max_history=5):
+    """
+    Generate a summary of recent actions from message history.
+
+    Args:
+        messages: List of chat messages
+        max_history: Maximum number of recent actions to include
+
+    Returns:
+        str: Formatted history string
+    """
+    import re
+
+    history_items = []
+    assistant_msgs = [msg for msg in messages if msg.get('role') == 'assistant']
+
+    # Get last N assistant messages
+    recent_msgs = assistant_msgs[-max_history:] if len(assistant_msgs) > max_history else assistant_msgs
+
+    for idx, msg in enumerate(recent_msgs, 1):
+        content = msg.get('content', '')
+        thought = ""
+        action = ""
+
+        # Extract Thought and Action
+        if 'Thought:' in content and 'Action:' in content:
+            try:
+                thought_match = re.search(r'Thought:\s*(.+?)(?:\n|Action:)', content, re.DOTALL)
+                action_match = re.search(r'Action:\s*(.+?)(?:\n|$)', content)
+
+                if thought_match:
+                    thought = thought_match.group(1).strip()
+                    # Truncate if too long
+                    if len(thought) > 100:
+                        thought = thought[:97] + "..."
+
+                if action_match:
+                    action = action_match.group(1).strip()
+            except:
+                pass
+
+        if action:
+            history_items.append(f"  {idx}. Action: {action}")
+            if thought and len(thought) < 80:  # Only include short thoughts
+                history_items.append(f"     Thought: {thought}")
+
+    if not history_items:
+        return ""
+
+    # Detect if there were repeated actions (stuck loops)
+    actions_only = [item.split("Action: ")[1] if "Action: " in item else "" for item in history_items]
+    actions_only = [a for a in actions_only if a]
+
+    stuck_info = ""
+    if len(actions_only) >= 2:
+        # Check if last action was repeated
+        last_action = actions_only[-1]
+        repeat_count = actions_only.count(last_action)
+        if repeat_count >= 2:
+            stuck_info = f"\n  ⚠️ NOTE: '{last_action}' was attempted {repeat_count} times without progress."
+
+    history_text = "==== ACTION HISTORY (Recent attempts) ====\n"
+    history_text += "\n".join(history_items)
+    history_text += stuck_info
+    history_text += "\n==== END OF HISTORY ====\n\n"
+
+    return history_text
+
+
+def format_msg(it, init_msg, pdf_obs, warn_obs, web_img_b64, web_text, action_history=""):
     if it == 1:
-        init_msg += f"I've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. Please focus more on the screenshot and then refer to the textual information.\n{web_text}"
+        init_msg += f"I've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. My current query is please focus more on the screenshot and then refer to the textual information.\n{web_text}"
         init_msg_format = {
             'role': 'user',
             'content': [
@@ -70,10 +183,11 @@ def format_msg(it, init_msg, pdf_obs, warn_obs, web_img_b64, web_text):
         return init_msg_format
     else:
         if not pdf_obs:
+            observation_text = f"Observation:{warn_obs}\n\n{action_history}My current query is please analyze the attached screenshot and give the Thought and Action. I've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. Please focus more on the screenshot and then refer to the textual information.\n{web_text}"
             curr_msg = {
                 'role': 'user',
                 'content': [
-                    {'type': 'text', 'text': f"Observation:{warn_obs} please analyze the attached screenshot and give the Thought and Action. I've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. Please focus more on the screenshot and then refer to the textual information.\n{web_text}"},
+                    {'type': 'text', 'text': observation_text},
                     {
                         'type': 'image_url',
                         'image_url': {"url": f"data:image/png;base64,{web_img_b64}"}
@@ -81,10 +195,11 @@ def format_msg(it, init_msg, pdf_obs, warn_obs, web_img_b64, web_text):
                 ]
             }
         else:
+            observation_text = f"Observation: {pdf_obs}\n\n{action_history}My current query is please analyze the response given by Assistant, then consider whether to continue iterating or not. The screenshot of the current page is also attached, give the Thought and Action. I've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. Please focus more on the screenshot and then refer to the textual information.\n{web_text}"
             curr_msg = {
                 'role': 'user',
                 'content': [
-                    {'type': 'text', 'text': f"Observation: {pdf_obs} Please analyze the response given by Assistant, then consider whether to continue iterating or not. The screenshot of the current page is also attached, give the Thought and Action. I've provided the tag name of each element and the text it contains (if text exists). Note that <textarea> or <input> may be textbox, but not exactly. Please focus more on the screenshot and then refer to the textual information.\n{web_text}"},
+                    {'type': 'text', 'text': observation_text},
                     {
                         'type': 'image_url',
                         'image_url': {"url": f"data:image/png;base64,{web_img_b64}"}
@@ -94,7 +209,7 @@ def format_msg(it, init_msg, pdf_obs, warn_obs, web_img_b64, web_text):
         return curr_msg
 
 
-def format_msg_text_only(it, init_msg, pdf_obs, warn_obs, ac_tree):
+def format_msg_text_only(it, init_msg, pdf_obs, warn_obs, ac_tree, action_history=""):
     if it == 1:
         init_msg_format = {
             'role': 'user',
@@ -105,27 +220,31 @@ def format_msg_text_only(it, init_msg, pdf_obs, warn_obs, ac_tree):
         if not pdf_obs:
             curr_msg = {
                 'role': 'user',
-                'content': f"Observation:{warn_obs} please analyze the accessibility tree and give the Thought and Action.\n{ac_tree}"
+                'content': f"Observation:{warn_obs}\n\n{action_history}My current query is please analyze the accessibility tree and give the Thought and Action.\n{ac_tree}"
             }
         else:
             curr_msg = {
                 'role': 'user',
-                'content': f"Observation: {pdf_obs} Please analyze the response given by Assistant, then consider whether to continue iterating or not. The accessibility tree of the current page is also given, give the Thought and Action.\n{ac_tree}"
+                'content': f"Observation: {pdf_obs}\n\n{action_history}My current query is please analyze the response given by Assistant, then consider whether to continue iterating or not. The accessibility tree of the current page is also given, give the Thought and Action.\n{ac_tree}"
             }
         return curr_msg
 
 
 def call_gpt4v_api(args, openai_client, messages):
     retry_times = 0
+    # Detect which client is being used
+    is_sequrity = isinstance(openai_client, SequrityAI)
+    client_name = "Sequrity" if is_sequrity else "OpenAI"
+
     while True:
         try:
             if not args.text_only:
-                logging.info('Calling gpt4v API...')
+                logging.info(f'Calling {client_name} gpt4v API (model: {args.api_model})...')
                 openai_response = openai_client.chat.completions.create(
                     model=args.api_model, messages=messages, max_tokens=1000, seed=args.seed
                 )
             else:
-                logging.info('Calling gpt4 API...')
+                logging.info(f'Calling {client_name} gpt4 API (model: {args.api_model})...')
                 openai_response = openai_client.chat.completions.create(
                     model=args.api_model, messages=messages, max_tokens=1000, seed=args.seed, timeout=30
                 )
@@ -260,6 +379,14 @@ def main():
     # Determine if we should use Sequrity or OpenAI
     use_sequrity = remote_endpoint and ("sequrity" in remote_endpoint.lower() or "127.0.0.1" in remote_endpoint.lower())
 
+    # Load appropriate prompts based on endpoint
+    if use_sequrity:
+        from prompts_sequrity import SYSTEM_PROMPT, SYSTEM_PROMPT_TEXT_ONLY
+        print("Loading Sequrity-specific prompts (with tool usage requirements)")
+    else:
+        from prompts import SYSTEM_PROMPT, SYSTEM_PROMPT_TEXT_ONLY
+        print("Loading standard prompts (backward compatible)")
+
     # Load appropriate API key from environment
     if use_sequrity:
         # Use SEQURITY_API_KEY for Sequrity endpoint
@@ -364,7 +491,7 @@ def main():
                         logging.error('Driver error when adding set-of-mark.')
                     else:
                         logging.error('Driver error when obtaining accessibility tree.')
-                    logging.error(e)
+                    logging.error(traceback.format_exc())
                     break
 
                 img_path = os.path.join(task_dir, 'screenshot{}.png'.format(it))
@@ -378,11 +505,16 @@ def main():
                 # encode image
                 b64_img = encode_image(img_path)
 
+                # Generate action history from previous messages (only for iterations after the first)
+                action_history = ""
+                if it > 1:
+                    action_history = generate_action_history(messages, max_history=5)
+
                 # format msg
                 if not args.text_only:
-                    curr_msg = format_msg(it, init_msg, pdf_obs, warn_obs, b64_img, web_eles_text)
+                    curr_msg = format_msg(it, init_msg, pdf_obs, warn_obs, b64_img, web_eles_text, action_history)
                 else:
-                    curr_msg = format_msg_text_only(it, init_msg, pdf_obs, warn_obs, ac_tree)
+                    curr_msg = format_msg_text_only(it, init_msg, pdf_obs, warn_obs, ac_tree, action_history)
                 messages.append(curr_msg)
             else:
                 curr_msg = {
@@ -406,10 +538,47 @@ def main():
                 accumulate_prompt_token += prompt_tokens
                 accumulate_completion_token += completion_tokens
                 logging.info(f'Accumulate Prompt Tokens: {accumulate_prompt_token}; Accumulate Completion Tokens: {accumulate_completion_token}')
-                logging.info('API call complete...')
+                client_name = "Sequrity" if use_sequrity else "OpenAI"
+                logging.info(f'{client_name} API call complete...')
             gpt_4v_res = openai_response.choices[0].message.content
             messages.append({'role': 'assistant', 'content': gpt_4v_res})
 
+            # Detect stuck loop - check if same action is repeated
+            stuck_loop_detected, repeated_action = detect_stuck_loop(messages)
+            stuck_loop_warn_obs = ""
+            if stuck_loop_detected:
+                logging.warning(f"⚠️ STUCK LOOP DETECTED: Action '{repeated_action}' repeated multiple times without progress!")
+                # Add CRITICAL warning with action examples at the beginning of next observation
+                stuck_loop_warn_obs = f"""🚨 CRITICAL ALERT - STUCK LOOP DETECTED 🚨
+
+Your previous action '{repeated_action}' has been tried multiple times WITHOUT any progress.
+This means the current approach is NOT working.
+
+YOU MUST IMMEDIATELY TRY A DIFFERENT ACTION. DO NOT REPEAT '{repeated_action}'.
+
+==== VALID ACTION FORMATS (use ONE that is different from your previous action) ====
+
+Available actions you can take:
+1. Scroll [WINDOW]; down  - RECOMMENDED: Scroll down to see more page content
+2. Scroll [WINDOW]; up    - Scroll up to see content above
+3. Wait                   - Wait 5 seconds for page to finish loading
+4. GoBack                 - Go back to the previous page
+5. Click [X]              - Click a different numbered element (use parse_image_with_ai to find it)
+6. Type [X]; [Content]    - Type content into a textbox
+
+Example Thought and Action pairs:
+- Thought: "Previous clicks didn't work. Scrolling down to see more content."
+  Action: Scroll [WINDOW]; down
+
+- Thought: "This page doesn't have what I need. Going back."
+  Action: GoBack
+
+==== END OF ACTION FORMATS ====
+
+CRITICAL: You MUST provide a Thought and Action that uses a DIFFERENT action than '{repeated_action}'.
+Based on the situation, SCROLLING DOWN is the most likely solution when clicking isn't working.
+
+"""
 
             # remove the rects on the website
             if (not args.text_only) and rects:
@@ -424,7 +593,8 @@ def main():
             try:
                 assert 'Thought:' in gpt_4v_res and 'Action:' in gpt_4v_res
             except AssertionError as e:
-                logging.error(e)
+                logging.error("Format assertion failed - missing 'Thought' or 'Action' in response")
+                logging.error(f"Response was: {gpt_4v_res[:200]}...")
                 fail_obs = "Format ERROR: Both 'Thought' and 'Action' should be included in your reply."
                 continue
 
@@ -435,7 +605,7 @@ def main():
 
             fail_obs = ""
             pdf_obs = ""
-            warn_obs = ""
+            warn_obs = stuck_loop_warn_obs  # Preserve stuck loop warning for next iteration
             # execute action
             try:
                 window_handle_task = driver_task.current_window_handle
@@ -489,7 +659,10 @@ def main():
                                               element_box[1] + element_box[3] // 2)
                         web_ele = driver_task.execute_script("return document.elementFromPoint(arguments[0], arguments[1]);", element_box_center[0], element_box_center[1])
 
-                    warn_obs = exec_action_type(info, web_ele, driver_task)
+                    type_warn = exec_action_type(info, web_ele, driver_task)
+                    # Combine stuck loop warning with type warning
+                    if type_warn:
+                        warn_obs = warn_obs + "\n" + type_warn if warn_obs else type_warn
                     if 'wolfram' in task['web']:
                         time.sleep(5)
 
@@ -517,7 +690,7 @@ def main():
                 fail_obs = ""
             except Exception as e:
                 logging.error('driver error info:')
-                logging.error(e)
+                logging.error(traceback.format_exc())
                 if 'element click intercepted' not in str(e):
                     fail_obs = "The action you have chosen cannot be exected. Please double-check if you have selected the wrong Numerical Label or Action or Action format. Then provide the revised Thought and Action."
                 else:
