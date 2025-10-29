@@ -79,9 +79,11 @@ def get_web_element_rect(browser, fix_color=True):
 
                 return {
                 element: element,
-                include: 
+                include:
                     (element.tagName === "INPUT" || element.tagName === "TEXTAREA" || element.tagName === "SELECT") ||
                     (element.tagName === "BUTTON" || element.tagName === "A" || (element.onclick != null) || window.getComputedStyle(element).cursor == "pointer") ||
+                    (element.getAttribute("role") === "button" || element.getAttribute("role") === "link" || element.getAttribute("role") === "menuitem") ||
+                    (element.hasAttribute("tabindex") && element.getAttribute("tabindex") !== "-1") ||
                     (element.tagName === "IFRAME" || element.tagName === "VIDEO" || element.tagName === "LI" || element.tagName === "TD" || element.tagName === "OPTION")
                 ,
                 area,

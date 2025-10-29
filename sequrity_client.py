@@ -115,9 +115,33 @@ class ChatCompletions:
 
     def _build_headers(self):
         """Build request headers including session ID if available."""
+        # Minimal policy to enable headers-only mode (required for X-Security-Config to work)
+        minimal_policy = {
+            "language": "json-sqrt",
+            "codes": "[]",  # Empty policy list
+            "allow_undefined_tools": True,
+            "fail_fast": True,
+            "auto_gen": False
+        }
+
+        # Minimal features for dual-llm mode
+        minimal_features = [
+            {
+                "feature_name": "Dual LLM",  # Note: must use title case with space
+                "config_json": json.dumps({"mode": "standard"})
+            }
+        ]
+
         headers = {
             "Content-Type": "application/json",
             "Authorization": f"Bearer {self.client.api_key}",
+            "X-Security-Policy": json.dumps(minimal_policy),
+            "X-Security-Features": json.dumps(minimal_features),
+            "X-Security-Config": json.dumps({
+                "max_nested_session_depth": 2,  # Maximum allowed value (must be < 3)
+                "disable_rllm": False,
+                "disable_tllm": True
+            })
         }
 
         if not self.client._session_id is None:
@@ -144,18 +168,20 @@ class ChatCompletions:
 
     def _log_request(self, body):
         """Log request details, excluding large image data."""
-        log_body = body.copy()
-        if "messages" in log_body:
-            log_body["messages"] = [
-                {
-                    "role": msg.get("role"),
-                    "content": "[multipart content with images]"
-                        if isinstance(msg.get("content"), list)
-                        else (msg.get("content", "")[:100] if msg.get("content") else "")
-                }
-                for msg in log_body["messages"]
-            ]
-        logging.info(f"Sending request: {json.dumps(log_body, indent=2)}")
+        msg_count = len(body.get("messages", []))
+        has_tools = "tools" in body
+        has_images = any(
+            isinstance(msg.get("content"), list)
+            for msg in body.get("messages", [])
+        )
+
+        summary = f"Sending request: model={body.get('model')}, messages={msg_count}"
+        if has_tools:
+            summary += f", tools={len(body.get('tools', []))}"
+        if has_images:
+            summary += ", with_images=True"
+
+        logging.info(summary)
 
     def _make_request(self, headers, body, timeout):
         """Make HTTP POST request to Sequrity endpoint."""
@@ -228,3 +254,39 @@ class SequrityAI:
         if self._session_id:
             logging.info(f"[Session] Resetting session ID (was: {self._session_id})")
         self._session_id = None
+
+    def get_pllm_program(self, session_id: str) -> dict:
+        """Retrieve the PLLM program for a specific session.
+
+        Args:
+            session_id: The session ID to retrieve the program from
+
+        Returns:
+            dict with keys:
+                - session_id: The session ID
+                - program: The PLLM program code (or None if not found)
+                - pllm_attempts: Number of PLLM attempts
+                - source: "active_session" or "log_file"
+        """
+        url = f"{self.base_url}/sessions/{session_id}/program"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+        }
+
+        try:
+            response = requests.get(url, headers=headers, timeout=30)
+
+            if response.status_code == 200:
+                return response.json()
+            elif response.status_code == 404:
+                logging.error(f"Session {session_id} not found or no program available")
+                raise Exception(f"Session not found: {response.json().get('detail', 'Unknown error')}")
+            else:
+                error_msg = f"HTTP {response.status_code}: {response.text}"
+                logging.error(f"Failed to retrieve PLLM program: {error_msg}")
+                raise Exception(error_msg)
+
+        except requests.exceptions.RequestException as e:
+            error_msg = f"Request exception: {str(e)}"
+            logging.error(error_msg)
+            raise Exception(error_msg)
