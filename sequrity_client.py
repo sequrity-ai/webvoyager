@@ -175,7 +175,7 @@ class ChatCompletions:
             for msg in body.get("messages", [])
         )
 
-        summary = f"Sending request: model={body.get('model')}, messages={msg_count}"
+        summary = f"Sending request: messages={msg_count}"
         if has_tools:
             summary += f", tools={len(body.get('tools', []))}"
         if has_images:

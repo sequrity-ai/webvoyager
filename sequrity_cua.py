@@ -366,6 +366,7 @@ class SequrityCUA:
             "messages": self.messages,
             "tools": TOOLS,
             "max_tokens": 2000,
+            "reasoning_effort": "low",
             "timeout": 300,  # Increase timeout for vision requests
         }
 
