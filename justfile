@@ -1,5 +1,6 @@
 # Run all tasks
-run: apple allrecipes amazon arxiv bbc-news booking github
+run QUERY URL ITER:
+    uv run --env-file .env.localhost python sequrity_cua.py --task "{{QUERY}}" --url {{URL}} --max_iterations {{ITER}}
 
 # Apple task
 apple:
